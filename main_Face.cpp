@@ -43,6 +43,9 @@ unsigned int loadCubemap(vector<std::string> faces);
 // facial animation functions
 void getDeltaM(Model modelNeutral, Model modelBlend);
 int pickNearestVertex(int mouseX, int mouseY, mat4 VM, mat4 P);
+void read_anim_text_file();
+void ApplyBlendshapeWeights(const vector<float>& weights, Model mNeutralFace);
+void applyDeltaM(Model mNeutralFace, std::vector<glm::vec3> deltaM, float weight);
 
 // window settings
 const unsigned int SCR_WIDTH = 800;
@@ -135,6 +138,7 @@ bool isOffsetApplied = false;
 bool isWireframe = false;
 bool isPartA = true;
 bool isPartB = false;
+bool isPlayAnim = false;
 
 #pragma endregion
 // ========================================facial init (end) ===========================================================
@@ -218,8 +222,8 @@ int main()
 	unsigned int num_cols = static_cast<unsigned int>(vecBlendFacialExps.size());
 
 	// Equation: (BT.B + (a+u).I).W = BT.(m-m0) + a.Wt-1
-	float a(0.1);													 // alpha	
-	float u(0.001);													 // mu
+	float a(0.1);																	 // alpha	
+	float u(0.001);																	 // mu
 	Eigen::MatrixXf B(num_rows, num_cols);											 // Matrix B: containing deltas to solve weights
 	Eigen::MatrixXf I = MatrixXf::Identity(num_cols, num_cols);						 // Identity Matrix I
 	Eigen::VectorXf m(num_rows);													 // Vector New Facial Vertice Matrix
@@ -252,9 +256,9 @@ int main()
 	}
 
 	// set up the equation
-	MatrixXf A = B.transpose() * B + (a + u) * I;
-	VectorXf b = B.transpose() * (m - m0) + a * w_prev;
-	VectorXf w = A.ldlt().solve(b);
+	MatrixXf leftEquation = B.transpose() * B + (a + u) * I;
+	VectorXf rightEquation = B.transpose() * (m - m0) + a * w_prev;
+	VectorXf w = leftEquation.ldlt().solve(rightEquation);
 
 	for (unsigned int i = 0; i < num_cols; ++i) {
 		vecWeights[i] = w(i);
@@ -280,8 +284,7 @@ int main()
 	glm::mat4 rotateMat;
 	myGUI myGui(window);  // initialize IMG UI
 	vec3 initialPositions;
-	//std::vector<glm::vec3> initialPositions;
-	// render loop
+	int frame_num = 0;
 	while (!glfwWindowShouldClose(window))
 	{
 		if (isWireframe)
@@ -316,6 +319,7 @@ int main()
 		glm::mat4 viewMat = camera.GetViewMatrix();
 		glm::mat4 modelMat = glm::mat4(1.0f);
 		vec3 lightPos(10.0f, 50.0f, 50.0f);
+		vector<int> vecIndex;
 
 		if (isPartA)
 		{
@@ -328,11 +332,25 @@ int main()
 
 				minIndex = pickNearestVertex(lastX, lastY, viewMat, projMat);
 				initialPositions = mNeutralFace.vecModelVertex[minIndex].Position;
+				
 			}
+
+			for (size_t i = 0; i < mNeutralFace.vecModelVertex.size(); ++i)
+			{
+				if (mNeutralFace.vecModelVertex[i].Position == mNeutralFace.vecModelVertex[minIndex].Position)
+				{
+					vecIndex.push_back(i);
+				}
+			}
+
 
 			if (offsetX != 0.0 || offsetY != 0.0 || offsetZ != 0.0)
 			{
-				mNeutralFace.vecModelVertex[minIndex].Position = initialPositions + vec3(offsetX, offsetY, offsetZ);
+				for (int i : vecIndex)
+				{
+					mNeutralFace.vecModelVertex[i].Position = initialPositions + vec3(offsetX, offsetY, offsetZ);
+				}
+			
 			}
 
 			// draw face
@@ -354,6 +372,55 @@ int main()
 			shaderBall.setMat4("model", modelMat2);
 			mBall.Draw(shaderBall);  // draw target ball
 		}
+		else if (isPartB)
+		{
+			read_anim_text_file();
+
+			if (isPlayAnim)
+			{
+			
+
+				for (int i = 0; i < meshFileNames.size(); i++) {
+					applyDeltaM(mNeutralFace, vecDeltaMs[i], animationWeights[frame_num][i]);
+
+
+
+					// draw face
+					sShader.use();
+					sShader.setMat4("projection", projMat);
+					sShader.setMat4("view", viewMat);
+					sShader.setVec3("lightPos", lightPos);
+					modelMat = glm::translate(modelMat, glm::vec3(0.0f, 0.0f, 0.0f)); // translate it down so it's at the center of the scene
+					sShader.setMat4("model", modelMat);
+
+					mNeutralFace.updateMeshVertices(mNeutralFace.vecModelVertex);  // update new position of selected vertex
+					mNeutralFace.Draw(sShader);
+
+					// draw target ball
+					glm::mat4 modelMat2 = glm::translate(glm::mat4(1.0f), mNeutralFace.vecModelVertex[minIndex].Position); // translate it to nearest vertex
+					shaderBall.use();
+					shaderBall.setMat4("projection", projMat);
+					shaderBall.setMat4("view", viewMat);
+					shaderBall.setMat4("model", modelMat2);
+					mBall.Draw(shaderBall);  // draw target ball
+
+				}
+				frame_num++;
+				if (frame_num == animationWeights.size()) {
+					isPlayAnim = false;
+				}
+			}
+	
+
+
+			//for (const auto& frameWeights : animationWeights) {
+			//	ApplyBlendshapeWeights(frameWeights, mNeutralFace);
+
+			//	// ... (The rest of your rendering and application loop)
+			//}
+
+		}
+
 
 
 
@@ -383,7 +450,8 @@ int main()
 		}
 
 		//ImGui::Checkbox("isOffestApplied", &isOffsetApplied);
-		ImGui::Checkbox("isWireframe", &isWireframe);
+		ImGui::Checkbox("Wireframe", &isWireframe);
+		ImGui::Checkbox("PlayAnimation", &isPlayAnim);
 
 		//ImGui::SliderInt("slider int", &i1, -1, 3);
 
@@ -498,40 +566,6 @@ void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 }
 #pragma endregion
 // ========================================process mouse and keyboard (end) ===========================================================
-// ========================================load cube (start)==========================================================
-#pragma region
-unsigned int loadCubemap(vector<std::string> faces)
-{
-	unsigned int textureID;
-	glGenTextures(1, &textureID);
-	glBindTexture(GL_TEXTURE_CUBE_MAP, textureID);
-
-	int width, height, nrComponents;
-	for (unsigned int i = 0; i < faces.size(); i++)
-	{
-		unsigned char* data = stbi_load(faces[i].c_str(), &width, &height, &nrComponents, 0);
-		if (data)
-		{
-			glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
-			stbi_image_free(data);
-			cout << "successfully loaded image: " << faces[i].c_str() << endl;
-		}
-		else
-		{
-			std::cout << "Cubemap texture failed to load at path: " << faces[i] << std::endl;
-			stbi_image_free(data);
-		}
-	}
-	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-
-	return textureID;
-}
-#pragma endregion
-// ========================================load cube (end) ===========================================================
 
 
 void getDeltaM(Model modelNeutral, Model modelBlend)
@@ -611,3 +645,31 @@ void read_anim_text_file() {
 	}
 }
 
+void ApplyBlendshapeWeights(const vector<float>& weights, Model mNeutralFace) {
+	
+
+	for (unsigned int i = 0; i < mNeutralFace.vecModelVertex.size(); ++i) {
+		Eigen::Vector3f newPosition = Eigen::Vector3f::Zero();
+		// Add the weighted deltas to the original position
+		for (unsigned int j = 0; j < weights.size(); ++j) {
+			newPosition += Eigen::Vector3f(vecDeltaMs[j][i].x,
+				vecDeltaMs[j][i].y,
+				vecDeltaMs[j][i].z) * weights[j];
+		}
+		// Update the neutral face with the new position
+		mNeutralFace.vecModelVertex[i].Position.x += newPosition.x();
+		mNeutralFace.vecModelVertex[i].Position.y += newPosition.y();
+		mNeutralFace.vecModelVertex[i].Position.z += newPosition.z();
+	}
+}
+
+void applyDeltaM(Model mNeutralFace, std::vector<glm::vec3> deltaM, float weight)
+{
+
+	for (unsigned int i = 0; i < mNeutralFace.vecModelVertex.size(); i++) {
+		mNeutralFace.vecModelVertex[i].Position.x -= deltaM[i].x * weight;
+		mNeutralFace.vecModelVertex[i].Position.y -= deltaM[i].y * weight;
+		mNeutralFace.vecModelVertex[i].Position.z -= deltaM[i].z * weight;
+	}
+
+}
