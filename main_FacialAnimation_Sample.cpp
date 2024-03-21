@@ -42,19 +42,6 @@ unsigned int loadCubemap(vector<std::string> faces);
 // facial animation functions
 void getDeltaM(Model modelNeutral, Model modelBlend);
 int pickNearestVertex(int mouseX, int mouseY, mat4 VM, mat4 P);
-//float calcDistance(const vec3& p1, const vec3& p2);
-//void read_anim_text_file();
-//void init_facial();
-//void removeWordFromLine(std::string& line, const std::string& word);
-//void calcDeltaM(ModelData mesh_data);
-//void loadNeutral(glm::mat4& modelNeutral, int matrix_location);
-//void loadVertexPicker(glm::mat4& modelVertexPicker, int matrix_location);
-//void applyDeltaM(ModelData& mesh_data_neutral, std::vector<glm::vec3> deltaM, float weight);
-//glm::vec3 vertexPicker(int x, int y, glm::mat4 VM, glm::mat4 P, ModelData currentFaceMesh);
-//void getMouseLocation(int x, int y, glm::mat4 VM, glm::mat4 P, int chosenVertexIndex);
-//Eigen::VectorXf blendshapeSolver(std::vector<ModelData> expressionMeshes);
-//void updateScene();
-
 
 // window settings
 const unsigned int SCR_WIDTH = 800;
@@ -74,21 +61,6 @@ bool MouseButton1(false);
 float deltaTime = 0.0f;
 float lastFrame = 0.0f;
 
-//Euler
-int rotateMode = 1;
-
-float euler_y = 0.0;
-float euler_p = 0.0;
-float euler_r = 0.0;
-
-// Quternion
-glm::quat quaternion = glm::angleAxis(glm::radians(0.0f), glm::vec3(1., 0., 0.));
-float old_eulerY = euler_y;
-float old_eulerR = euler_r;
-float old_eulerP = euler_p;
-float delta_p = 0;
-float delta_y = 0;
-float delta_r = 0;
 
 glm::mat4 trans;
 glm::mat4 modelMat;
@@ -107,17 +79,9 @@ float startTime = glfwGetTime();
 // ========================================facial init (start)==========================================================
 #pragma region
 
-GLuint shaderProgramID;
-
-unsigned int mesh_vao = 0;
-int width = 1400;
-int height = 1050;
-static float aspect = width / (float)height;
-
 vector <vector<vec3>> vecDeltaMs;
 vector<float> vecWeights;
 
-std::vector<std::string> labels;
 std::vector<std::string> mesh_file_names{
 		"Mery_jaw_open.obj",
 		"Mery_kiss.obj",
@@ -157,11 +121,6 @@ Eigen::MatrixXf B;
 
 vec3 NearestVertex = vec3(0, 0, 0);
 
-struct CallbackContext {
-	Model* mNeutralFace;
-};
-
-
 vector<vec3> vecNeutralFaceVertice;
 float lightX;
 float lightY;
@@ -170,6 +129,8 @@ float offsetX(0);
 float offsetY(0);
 float offsetZ(0);
 int minIndex;
+bool isOffsetApplied = false;
+bool isWireframe = false;
 
 #pragma endregion
 // ========================================facial init (end) ===========================================================
@@ -223,7 +184,7 @@ int main()
 #pragma region
 
 	Shader sShader("assets/shaders/phong.vs", "assets/shaders/phong.fs");
-
+	Shader shaderBall("assets/shaders/Animation/kinematic/ball.vs", "assets/shaders/Animation/kinematic/ball.fs");
 	bool isUpdateVertice(true);
 	Model mNeutralFace = Model("assets/blendshapes/high_res/neutral.obj", isUpdateVertice);
 	Model mBall = Model("assets/models/ball/ball.obj");
@@ -267,8 +228,7 @@ int main()
 
 	stbi_set_flip_vertically_on_load(true); // other models flip
 
-	// draw in wireframe
-	//glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+
 #pragma endregion
 // ========================================init shaders & models (end) ===========================================================
 
@@ -289,10 +249,19 @@ int main()
 #pragma region
 	glm::mat4 rotateMat;
 	myGUI myGui(window);  // initialize IMG UI
-
+	vec3 initialPositions;
+	//std::vector<glm::vec3> initialPositions;
 	// render loop
 	while (!glfwWindowShouldClose(window))
 	{
+		if (isWireframe)
+		{
+			glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);  // draw in wireframe
+		}
+		else
+		{
+			glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+		}
 		// per-frame time logic
 		// --------------------
 		float currentFrame = glfwGetTime();
@@ -316,47 +285,50 @@ int main()
 		glm::mat4 projMat = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 10000.0f);
 		glm::mat4 viewMat = camera.GetViewMatrix();
 		glm::mat4 modelMat = glm::mat4(1.0f);
+		vec3 lightPos(10.0f, 50.0f, 50.0f);
 
+		// pick nearest vertex by clicking right mouse
+		if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_2) == GLFW_PRESS)
+		{
+			offsetX = 0.0f;
+			offsetY = 0.0f;
+			offsetZ = 0.0f;
+			minIndex = pickNearestVertex(lastX, lastY, viewMat, projMat);
+			initialPositions = mNeutralFace.vecModelVertex[minIndex].Position;
+		}
+
+		if (offsetX != 0.0 || offsetY != 0.0 || offsetZ != 0.0)
+		{
+			mNeutralFace.vecModelVertex[minIndex].Position = initialPositions + vec3(offsetX, offsetY, offsetZ);
+		}
+
+		// draw face
 		sShader.use();
 		sShader.setMat4("projection", projMat);
 		sShader.setMat4("view", viewMat);
-		
-		vec3 lightPos(lightX, lightY, lightZ);
 		sShader.setVec3("lightPos", lightPos);
-
 		modelMat = glm::translate(modelMat, glm::vec3(0.0f, 0.0f, 0.0f)); // translate it down so it's at the center of the scene
 		sShader.setMat4("model", modelMat);
 
-		mNeutralFace.updateMeshVertices(mNeutralFace.vecModelVertex);
-
+		mNeutralFace.updateMeshVertices(mNeutralFace.vecModelVertex);  // update new position of selected vertex
 		mNeutralFace.Draw(sShader);
 
-		// pick vertex by clicking right mouse
-		if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_1) == GLFW_PRESS)
-		{
-			//NearestVertex = pickNearestVertex(lastX, lastY, viewMat, projMat);
-			minIndex = pickNearestVertex(lastX, lastY, viewMat, projMat);
-			cout << "index=" << minIndex << endl;
-			//cout << "x:" << NearestVertex.x << ", y:" << NearestVertex.y << ", z:" << NearestVertex.z << ", mouse.x=" << lastX << ", mouse.y=" << lastY << endl;
-			
-			vecNeutralFaceVertice[minIndex].x += offsetX;
-			vecNeutralFaceVertice[minIndex].y += offsetY;
-			vecNeutralFaceVertice[minIndex].z += offsetZ;
-
-		}
-
-		modelMat = glm::translate(glm::mat4(1.0f), vecNeutralFaceVertice[minIndex]); // translate it to nearest vertex
-		sShader.setMat4("model", modelMat);
-		mBall.Draw(sShader);  // draw target ball
-
-		// update neutral face vertice to new place
-		//NearestVertex.x += offsetX;
-		//NearestVertex.y += offsetY;
-		//NearestVertex.z += offsetZ;
+		// draw target ball
+		glm::mat4 modelMat2 = glm::translate(glm::mat4(1.0f), mNeutralFace.vecModelVertex[minIndex].Position); // translate it to nearest vertex
+		shaderBall.use();
+		shaderBall.setMat4("projection", projMat);
+		shaderBall.setMat4("view", viewMat);
+		shaderBall.setMat4("model", modelMat2);
+		mBall.Draw(shaderBall);  // draw target ball
 
 
 
-		cout << "x:" << vecNeutralFaceVertice[minIndex].x << endl;
+
+		//cout << "offset applied: " << isOffsetApplied << endl;
+
+
+		//cout << "x:" << vecNeutralFaceVertice[minIndex].x << endl;
+		
 		//update new vertice and then draw
 		//for (int i=0; i< mNeutralFace.vecModelVertex.size(); i++)
 		//{
@@ -366,11 +338,6 @@ int main()
 
 		//mNeutralFace.Draw(sShader);
 		
-
-	
-
-		
-
 
 #pragma endregion
 		// ========================================draw face model (end) ===========================================================
@@ -385,10 +352,15 @@ int main()
 		ImGui::Begin("IMGUI Editor");
 
 		//ImGui::Text();
-		//if (ImGui::RadioButton("Euler", isEuler)) {
-		//	isQuater = false; // Ensure only one is selected
-		//	isEuler = true;
+		//if (ImGui::RadioButton("isOffestApplied", isOffsetApplied)) {
+		//	
 		//}
+		//else {
+		//	isOffsetApplied = true;
+		//}
+
+		//ImGui::Checkbox("isOffestApplied", &isOffsetApplied);
+		ImGui::Checkbox("isWireframe", &isWireframe);
 
 		//ImGui::SliderInt("slider int", &i1, -1, 3);
 
@@ -439,20 +411,6 @@ void processInput(GLFWwindow* window)
 		camera.ProcessKeyboard(LEFT, deltaTime);
 	if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
 		camera.ProcessKeyboard(RIGHT, deltaTime);
-
-	// Roration mode
-	if (glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS)
-		rotateMode = 1;  // Euler
-	if (glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS)
-		rotateMode = 2;  // Quaternions
-
-	// Euler angle
-	if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS)
-		euler_r -= .2f;
-	if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS)
-		euler_y -= .2f;
-	if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
-		euler_p -= .2f;
 
 	// UI
 	if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_2) == GLFW_PRESS)
