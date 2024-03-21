@@ -30,6 +30,7 @@
 
 using namespace glm;
 using namespace std;
+using namespace Eigen;
 
 // ========================================initialize (start)==========================================================
 #pragma region
@@ -82,7 +83,7 @@ float startTime = glfwGetTime();
 vector <vector<vec3>> vecDeltaMs;
 vector<float> vecWeights;
 
-std::vector<std::string> mesh_file_names{
+std::vector<std::string> meshFileNames{
 		"Mery_jaw_open.obj",
 		"Mery_kiss.obj",
 		"Mery_l_brow_lower.obj",
@@ -117,7 +118,8 @@ std::vector<int> constraintsIndex;
 Eigen::VectorXf m0;
 Eigen::VectorXf m;
 Eigen::MatrixXf B;
-
+Eigen::MatrixXf I;
+Eigen::VectorXf w_prev;
 
 vec3 NearestVertex = vec3(0, 0, 0);
 
@@ -131,6 +133,8 @@ float offsetZ(0);
 int minIndex;
 bool isOffsetApplied = false;
 bool isWireframe = false;
+bool isPartA = true;
+bool isPartB = false;
 
 #pragma endregion
 // ========================================facial init (end) ===========================================================
@@ -185,46 +189,9 @@ int main()
 
 	Shader sShader("assets/shaders/phong.vs", "assets/shaders/phong.fs");
 	Shader shaderBall("assets/shaders/Animation/kinematic/ball.vs", "assets/shaders/Animation/kinematic/ball.fs");
-	bool isUpdateVertice(true);
-	Model mNeutralFace = Model("assets/blendshapes/high_res/neutral.obj", isUpdateVertice);
+	
+	Model mNeutralFace = Model("assets/blendshapes/high_res/neutral.obj");
 	Model mBall = Model("assets/models/ball/ball.obj");
-
-	vecNeutralFaceVertice = mNeutralFace.vecVertice;
-
-
-
-
-	std::vector<Model> vecBlendFacialExps;  // store all blendshape facial expressions
-	for (const auto& fileName : mesh_file_names)
-	{
-		string tmpPath = "assets/blendshapes/high_res/" + fileName;
-		vecBlendFacialExps.emplace_back(tmpPath);  // emplace_back: call Model constructor to create model object
-
-		getDeltaM(mNeutralFace, vecBlendFacialExps.back());  // get delta between neutral face and blendshapes
-
-	}
-
-	// calculate delta between neutral face and other facial expressions
-	
-
-
-
-	
-
-
-	for (auto elem : vecBlendFacialExps) {
-		cout << elem.vecModelVertex.size() << endl;
-		//for (const auto& vertex : elem.vecModelVertex) {
-		//	std::cout << "Position: ("
-		//		<< vertex.Position.x << ", "
-		//		<< vertex.Position.y << ", "
-		//		<< vertex.Position.z << ")\n";
-		//}
-	}
-
-
-
-
 
 	stbi_set_flip_vertically_on_load(true); // other models flip
 
@@ -232,6 +199,69 @@ int main()
 #pragma endregion
 // ========================================init shaders & models (end) ===========================================================
 
+
+// ========================================PartB Prepare: Facial Animation Replay (start)==========================================================
+#pragma region
+
+	vecNeutralFaceVertice = mNeutralFace.vecVertice;
+
+	vector<Model> vecBlendFacialExps;  // store all blendshape facial expressions
+	for (const auto& meshFileName : meshFileNames)
+	{
+		string tmpPath = "assets/blendshapes/high_res/" + meshFileName;
+		vecBlendFacialExps.emplace_back(tmpPath);  // emplace_back: call Model constructor to create model object
+
+		getDeltaM(mNeutralFace, vecBlendFacialExps.back());  // update vecDeltaMs: get all delta between neutral face and blendshapes
+	}
+
+	unsigned int num_rows = static_cast<unsigned int>(mNeutralFace.vecModelVertex.size()) * 3;
+	unsigned int num_cols = static_cast<unsigned int>(vecBlendFacialExps.size());
+	
+	// Equation: (BT.B + (a+u).I).W = BT.(m-m0) + a.Wt-1
+	float a(0.1);													 // alpha	
+	float u(0.001);													 // mu
+	B(num_rows, num_cols);											 // Matrix B: containing deltas to solve weights
+	I = MatrixXf::Identity(num_cols, num_cols);						 // Identity Matrix I
+	m(num_rows);													 // Vector New Facial Vertice Matrix
+	m0(num_rows);													 // Vector Previous Facial Vertice Matrix
+	w_prev(num_cols);												 // The weights from the previous time step
+
+	// populate matrix B
+	for (unsigned int col = 0; col < num_cols; ++col) {
+		for (unsigned int row = 0; row < mNeutralFace.vecModelVertex.size(); ++row) { // iterate over vertices
+			B(row * 3 + 0, col) = vecDeltaMs[col][row].x;			 // X component
+			B(row * 3 + 1, col) = vecDeltaMs[col][row].y;			 // Y component
+			B(row * 3 + 2, col) = vecDeltaMs[col][row].z;			 // Z component
+		}	
+	}
+
+	// populate m and m0 with the current and original positions of the vertices
+	for (unsigned int i = 0; i < mNeutralFace.vecModelVertex.size(); ++i) {
+		m(i * 3 + 0) = mNeutralFace.vecModelVertex[i].Position.x;	 // Current X position
+		m(i * 3 + 1) = mNeutralFace.vecModelVertex[i].Position.y;	 // Current Y position
+		m(i * 3 + 2) = mNeutralFace.vecModelVertex[i].Position.z;	 // Current Z position
+
+		m0(i * 3 + 0) = vecNeutralFaceVertice[i].x;					 // Original X position
+		m0(i * 3 + 1) = vecNeutralFaceVertice[i].y;					 // Original Y position
+		m0(i * 3 + 2) = vecNeutralFaceVertice[i].z;					 // Original Z position
+	}
+
+	// populate weights from the previous time step
+	for (unsigned int i = 0; i < num_cols; ++i) {
+		w_prev(i) = vecWeights[i];
+	}
+
+	// set up the equation
+	MatrixXf A = B.transpose() * B + (a + u) * I;
+	VectorXf b = B.transpose() * (m - m0) + a * w_prev;
+	VectorXf w = A.ldlt().solve(b);
+
+	for (unsigned int i = 0; i < num_cols; ++i) {
+		vecWeights[i] = w(i);
+	}
+
+#pragma endregion
+// ========================================PartB Prepare: Facial Animation Replay (end) ===========================================================
 
 
 
@@ -287,57 +317,48 @@ int main()
 		glm::mat4 modelMat = glm::mat4(1.0f);
 		vec3 lightPos(10.0f, 50.0f, 50.0f);
 
-		// pick nearest vertex by clicking right mouse
-		if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_2) == GLFW_PRESS)
+		if (isPartA)
 		{
-			offsetX = 0.0f;
-			offsetY = 0.0f;
-			offsetZ = 0.0f;
-			minIndex = pickNearestVertex(lastX, lastY, viewMat, projMat);
-			initialPositions = mNeutralFace.vecModelVertex[minIndex].Position;
+			// pick nearest vertex by clicking right mouse
+			if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_2) == GLFW_PRESS)
+			{
+				offsetX = 0.0f;  // reset offset for next selected point
+				offsetY = 0.0f;
+				offsetZ = 0.0f;
+
+				minIndex = pickNearestVertex(lastX, lastY, viewMat, projMat);
+				initialPositions = mNeutralFace.vecModelVertex[minIndex].Position;
+			}
+
+			if (offsetX != 0.0 || offsetY != 0.0 || offsetZ != 0.0)
+			{
+				mNeutralFace.vecModelVertex[minIndex].Position = initialPositions + vec3(offsetX, offsetY, offsetZ);
+			}
+
+			// draw face
+			sShader.use();
+			sShader.setMat4("projection", projMat);
+			sShader.setMat4("view", viewMat);
+			sShader.setVec3("lightPos", lightPos);
+			modelMat = glm::translate(modelMat, glm::vec3(0.0f, 0.0f, 0.0f)); // translate it down so it's at the center of the scene
+			sShader.setMat4("model", modelMat);
+
+			mNeutralFace.updateMeshVertices(mNeutralFace.vecModelVertex);  // update new position of selected vertex
+			mNeutralFace.Draw(sShader);
+
+			// draw target ball
+			glm::mat4 modelMat2 = glm::translate(glm::mat4(1.0f), mNeutralFace.vecModelVertex[minIndex].Position); // translate it to nearest vertex
+			shaderBall.use();
+			shaderBall.setMat4("projection", projMat);
+			shaderBall.setMat4("view", viewMat);
+			shaderBall.setMat4("model", modelMat2);
+			mBall.Draw(shaderBall);  // draw target ball
 		}
 
-		if (offsetX != 0.0 || offsetY != 0.0 || offsetZ != 0.0)
-		{
-			mNeutralFace.vecModelVertex[minIndex].Position = initialPositions + vec3(offsetX, offsetY, offsetZ);
-		}
-
-		// draw face
-		sShader.use();
-		sShader.setMat4("projection", projMat);
-		sShader.setMat4("view", viewMat);
-		sShader.setVec3("lightPos", lightPos);
-		modelMat = glm::translate(modelMat, glm::vec3(0.0f, 0.0f, 0.0f)); // translate it down so it's at the center of the scene
-		sShader.setMat4("model", modelMat);
-
-		mNeutralFace.updateMeshVertices(mNeutralFace.vecModelVertex);  // update new position of selected vertex
-		mNeutralFace.Draw(sShader);
-
-		// draw target ball
-		glm::mat4 modelMat2 = glm::translate(glm::mat4(1.0f), mNeutralFace.vecModelVertex[minIndex].Position); // translate it to nearest vertex
-		shaderBall.use();
-		shaderBall.setMat4("projection", projMat);
-		shaderBall.setMat4("view", viewMat);
-		shaderBall.setMat4("model", modelMat2);
-		mBall.Draw(shaderBall);  // draw target ball
 
 
 
 
-		//cout << "offset applied: " << isOffsetApplied << endl;
-
-
-		//cout << "x:" << vecNeutralFaceVertice[minIndex].x << endl;
-		
-		//update new vertice and then draw
-		//for (int i=0; i< mNeutralFace.vecModelVertex.size(); i++)
-		//{
-		//	mNeutralFace.vecModelVertex[i].Position = vecNeutralFaceVertice[i];
-		//}
-
-
-		//mNeutralFace.Draw(sShader);
-		
 
 #pragma endregion
 		// ========================================draw face model (end) ===========================================================
@@ -352,21 +373,23 @@ int main()
 		ImGui::Begin("IMGUI Editor");
 
 		//ImGui::Text();
-		//if (ImGui::RadioButton("isOffestApplied", isOffsetApplied)) {
-		//	
-		//}
-		//else {
-		//	isOffsetApplied = true;
-		//}
+		if (ImGui::RadioButton("PartA", isPartA)) {
+			isPartA = true;
+			isPartB = false;
+		}
+		else if((ImGui::RadioButton("PartB", isPartB))) {
+			isPartA = false;
+			isPartB = true;
+		}
 
 		//ImGui::Checkbox("isOffestApplied", &isOffsetApplied);
 		ImGui::Checkbox("isWireframe", &isWireframe);
 
 		//ImGui::SliderInt("slider int", &i1, -1, 3);
 
-		ImGui::SliderFloat("lightX", &lightX, -1000.0f, 10000.0f);
-		ImGui::SliderFloat("lightY", &lightY, -1000.0f, 10000.0f);
-		ImGui::SliderFloat("lightZ", &lightZ, -1000.0f, 10000.0f);
+		//ImGui::SliderFloat("lightX", &lightX, -1000.0f, 10000.0f);
+		//ImGui::SliderFloat("lightY", &lightY, -1000.0f, 10000.0f);
+		//ImGui::SliderFloat("lightZ", &lightZ, -1000.0f, 10000.0f);
 
 		ImGui::SliderFloat("offsetX", &offsetX, -10.0f, 10.0f);
 		ImGui::SliderFloat("offsetY", &offsetY, -10.0f, 10.0f);
